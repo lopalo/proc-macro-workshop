@@ -14,6 +14,10 @@ path = "tests/progress.rs"
 
 [dev-dependencies]
 trybuild = { version = "1.0.49", features = ["diff"] }
+prettyplease = { version = "0.2" }
+pretty_assertions = { version = "1.4" }
 
 [dependencies]
-# TODO
+syn = { version = "2", features = ["extra-traits"] }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
