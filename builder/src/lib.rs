@@ -1,7 +1,8 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    parse2, Data, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Result,
+    parse2, spanned::Spanned, Data, DataStruct, DeriveInput, Error, Fields,
+    FieldsNamed, Result,
 };
 
 #[proc_macro_derive(Builder)]
@@ -35,13 +36,24 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
 
     let field_name: Vec<_> = fields.iter().map(|f| f.ident.clone()).collect();
 
-    let builder_field = fields.into_iter().map(|f| {
-        let fname = f.ident;
-        let ftype = f.ty;
-        quote! {
-            #fname: Option<#ftype>
-        }
-    });
+    let (builder_field, builder_setter) = fields
+        .into_iter()
+        .map(|f| {
+            let span = f.span();
+            let f_name = f.ident;
+            let f_type = f.ty;
+            let b_field = quote_spanned! {span=>
+                #f_name: Option<#f_type>
+            };
+            let b_setter = quote_spanned! {span=>
+                #vis fn #f_name(&mut self, value: #f_type) -> &mut Self {
+                    self.#f_name = Some(value);
+                    self
+                }
+            };
+            (b_field, b_setter)
+        })
+        .unzip::<_, _, Vec<_>, Vec<_>>();
 
     let output = quote! {
         impl #ident {
@@ -51,8 +63,24 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
                 }
             }
         }
+
         #vis struct #builder_ident {
             #(#builder_field),*
+        }
+
+        impl #builder_ident {
+            #(#builder_setter)*
+
+            #vis fn build(&mut self) -> ::std::result::Result<#ident, Box<dyn ::std::error::Error>> {
+                let Self {
+                    #(#field_name),*
+                } = ::std::mem::replace(self, #ident::builder());
+                ::std::result::Result::Ok(#ident {
+                    #(#field_name: #field_name.ok_or_else(||
+                        format!("Field `{}` is not set", stringify!(#field_name))
+                    )?),*
+                })
+            }
         }
     };
 
@@ -111,6 +139,42 @@ mod test {
                     args: Option<Vec<String>>,
                     env: Option<Vec<String>>,
                     current_dir: Option<String>,
+                }
+
+                impl CommandBuilder {
+                    pub fn executable(&mut self, value: String) -> &mut Self {
+                        self.executable = Some(value);
+                        self
+                    }
+                    pub fn args(&mut self, value: Vec<String>) -> &mut Self {
+                        self.args = Some(value);
+                        self
+                    }
+                    pub fn env(&mut self, value: Vec<String>) -> &mut Self {
+                        self.env = Some(value);
+                        self
+                    }
+                    pub fn current_dir(&mut self, value: String) -> &mut Self {
+                        self.current_dir = Some(value);
+                        self
+                    }
+                    pub fn build(&mut self) -> ::std::result::Result<Command, Box<dyn ::std::error::Error>> {
+                        let Self {
+                            executable,
+                            args,
+                            env,
+                            current_dir,
+                        } = ::std::mem::replace(self, Command::builder());
+                        ::std::result::Result::Ok(Command {
+                            executable: executable
+                                .ok_or_else(|| format!("Field `{}` is not set", stringify!(executable)))?,
+                            args: args.ok_or_else(|| format!("Field `{}` is not set", stringify!(args)))?,
+                            env: env.ok_or_else(|| format!("Field `{}` is not set", stringify!(env)))?,
+                            current_dir: current_dir
+                                .ok_or_else(|| format!("Field `{}` is not set", stringify!(current_dir)))?,
+                        })
+
+                   }
                 }
             },
         )
