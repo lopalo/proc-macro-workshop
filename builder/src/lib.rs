@@ -1,8 +1,8 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
     parse2, spanned::Spanned, Data, DataStruct, DeriveInput, Error, Fields,
-    FieldsNamed, Result,
+    FieldsNamed, GenericArgument, PathArguments, Result, Type, TypePath,
 };
 
 #[proc_macro_derive(Builder)]
@@ -36,24 +36,43 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
 
     let field_name: Vec<_> = fields.iter().map(|f| f.ident.clone()).collect();
 
-    let (builder_field, builder_setter) = fields
+    let (builder_field, (builder_setter, build_expr)) = fields
         .into_iter()
         .map(|f| {
             let span = f.span();
             let f_name = f.ident;
             let f_type = f.ty;
+            let optional_type = optional_type(&f_type);
+
+            let b_field_ty = optional_type.unwrap_or(&f_type);
             let b_field = quote_spanned! {span=>
-                #f_name: Option<#f_type>
+                #f_name: Option<#b_field_ty>
+            };
+
+            let b_setter_ty = match optional_type {
+                Some(ty) => ty,
+                None => &f_type,
             };
             let b_setter = quote_spanned! {span=>
-                #vis fn #f_name(&mut self, value: #f_type) -> &mut Self {
+                #vis fn #f_name(&mut self, value: #b_setter_ty) -> &mut Self {
                     self.#f_name = Some(value);
                     self
                 }
             };
-            (b_field, b_setter)
+
+            let b_expr = if optional_type.is_none() {
+                quote! {
+                    #f_name: #f_name.ok_or_else(||
+                        format!("Field `{}` is not set", stringify!(#f_name))
+                    )?
+                }
+            } else {
+                f_name.to_token_stream()
+            };
+
+            (b_field, (b_setter, b_expr))
         })
-        .unzip::<_, _, Vec<_>, Vec<_>>();
+        .unzip::<_, _, Vec<_>, (Vec<_>, Vec<_>)>();
 
     let output = quote! {
         impl #ident {
@@ -76,15 +95,24 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
                     #(#field_name),*
                 } = ::std::mem::replace(self, #ident::builder());
                 ::std::result::Result::Ok(#ident {
-                    #(#field_name: #field_name.ok_or_else(||
-                        format!("Field `{}` is not set", stringify!(#field_name))
-                    )?),*
+                    #(#build_expr),*
                 })
             }
         }
     };
 
     Ok(output)
+}
+
+fn optional_type(ty: &Type) -> Option<&Type> {
+    let Type::Path(TypePath { path, .. }) = ty else { return None };
+    let segment = path.segments.first()?;
+    if segment.ident.to_string() != "Option" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(ref option_args) = segment.arguments else { return None };
+    let Some(GenericArgument::Type(optional_type)) = option_args.args.first() else { return None };
+    Some(optional_type)
 }
 
 #[cfg(test)]
@@ -117,7 +145,7 @@ mod test {
                 executable: String,
                 args: Vec<String>,
                 env: Vec<String>,
-                current_dir: String,
+                current_dir: Option<String>,
             }
         };
         assert_tokens_eq(
@@ -170,8 +198,7 @@ mod test {
                                 .ok_or_else(|| format!("Field `{}` is not set", stringify!(executable)))?,
                             args: args.ok_or_else(|| format!("Field `{}` is not set", stringify!(args)))?,
                             env: env.ok_or_else(|| format!("Field `{}` is not set", stringify!(env)))?,
-                            current_dir: current_dir
-                                .ok_or_else(|| format!("Field `{}` is not set", stringify!(current_dir)))?,
+                            current_dir,
                         })
 
                    }
