@@ -66,7 +66,7 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
             f_type.to_token_stream()
         } else {
             let opt_ty = optional_type.unwrap_or(&f_type);
-            quote! { Option<#opt_ty> }
+            quote! { ::std::option::Option<#opt_ty> }
         };
         builder_field.push(quote_spanned! {span=>
             #f_ident: #b_field_ty
@@ -106,7 +106,7 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
             };
             builder_setter.push(quote_spanned! {span=>
                 #vis fn #f_ident(&mut self, value: #b_setter_ty) -> &mut Self {
-                    self.#f_ident = Some(value);
+                    self.#f_ident = ::std::option::Option::Some(value);
                     self
                 }
             });
@@ -145,7 +145,7 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
         impl #builder_ident {
             #(#builder_setter)*
 
-            #vis fn build(&mut self) -> ::std::result::Result<#ident, Box<dyn ::std::error::Error>> {
+            #vis fn build(&mut self) -> ::std::result::Result<#ident, ::std::boxed::Box<dyn ::std::error::Error>> {
                 let Self {
                     #(#field_name),*
                 } = ::std::mem::replace(self, #ident::builder());
@@ -196,16 +196,19 @@ struct FieldParams {
 }
 
 struct FieldParam {
+    span: Span,
     name: String,
     value: String,
 }
 
 impl Parse for FieldParam {
     fn parse(input: ParseStream) -> Result<Self> {
-        let name = input.parse::<syn::Ident>()?.to_string();
+        let name_ident: syn::Ident = input.parse()?;
+        let span = name_ident.span();
+        let name = name_ident.to_string();
         input.parse::<syn::token::Eq>()?;
         let value = input.parse::<syn::LitStr>()?.value();
-        Ok(Self { name, value })
+        Ok(Self { span, name, value })
     }
 }
 
@@ -216,7 +219,7 @@ fn field_params(attrs: &[syn::Attribute]) -> Result<FieldParams> {
             continue;
         }
         let param: FieldParam = attr.parse_args()?;
-        let error = |message| err(attr.span(), message);
+        let error = |message| err(param.span, message);
         match param.name.as_str() {
             "each" => {
                 if params.each_setter_name.is_some() {
@@ -281,15 +284,15 @@ mod test {
                 }
 
                 pub struct CommandBuilder {
-                    executable: Option<String>,
+                    executable: ::std::option::Option<String>,
                     args: Vec<String>,
                     env: Vec<String>,
-                    current_dir: Option<String>,
+                    current_dir: ::std::option::Option<String>,
                 }
 
                 impl CommandBuilder {
                     pub fn executable(&mut self, value: String) -> &mut Self {
-                        self.executable = Some(value);
+                        self.executable = ::std::option::Option::Some(value);
                         self
                     }
                     pub fn arg(&mut self, value: String) -> &mut Self {
@@ -305,10 +308,10 @@ mod test {
                         self
                     }
                     pub fn current_dir(&mut self, value: String) -> &mut Self {
-                        self.current_dir = Some(value);
+                        self.current_dir = ::std::option::Option::Some(value);
                         self
                     }
-                    pub fn build(&mut self) -> ::std::result::Result<Command, Box<dyn ::std::error::Error>> {
+                    pub fn build(&mut self) -> ::std::result::Result<Command, ::std::boxed::Box<dyn ::std::error::Error>> {
                         let Self {
                             executable,
                             args,
