@@ -2,7 +2,7 @@ use darling::{ast, Error, FromDeriveInput, FromField, Result};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-#[proc_macro_derive(CustomDebug)]
+#[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand(input.into())
         .unwrap_or_else(Error::write_errors)
@@ -17,8 +17,9 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
     let dbg_fields = dbg_struct.data.take_struct().unwrap();
     let field_fmt = dbg_fields.into_iter().map(|f| {
         let f_ident = f.ident;
+        let format = f.format.as_deref().unwrap_or("{:?}");
         quote! {
-            .field(stringify!(#f_ident), &self.#f_ident)
+            .field(stringify!(#f_ident), &format_args!(#format, &self.#f_ident))
         }
     });
 
@@ -43,6 +44,8 @@ struct DebugStruct {
 }
 
 #[derive(FromField)]
+#[darling(attributes(debug))]
 struct DebugField {
     ident: Option<syn::Ident>,
+    format: Option<String>,
 }
