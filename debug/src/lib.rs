@@ -1,6 +1,7 @@
 use darling::{ast, Error, FromDeriveInput, FromField, Result};
 use proc_macro2::TokenStream;
 use quote::quote;
+use std::collections::HashSet;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -14,7 +15,29 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
     let dbg_struct = DebugStruct::from_derive_input(&input)?;
 
     let struct_ident = dbg_struct.ident;
-    let dbg_fields = dbg_struct.data.take_struct().unwrap();
+    let mut generics = dbg_struct.generics;
+    let dbg_fields = dbg_struct
+        .data
+        .take_struct()
+        .expect("BUG: `darling(supports(struct_named))` didn't work");
+
+    let ty_param_idents: HashSet<_> = generics
+        .type_params()
+        .map(|ty_param| &ty_param.ident)
+        .collect();
+
+    let mut debug_bounds = HashSet::new();
+    for field in dbg_fields.iter() {
+        collect_debug_bounds(&ty_param_idents, &mut debug_bounds, &field.ty);
+    }
+
+    let where_clause = generics.make_where_clause();
+    for debug_bound in debug_bounds {
+        where_clause
+            .predicates
+            .push(syn::parse_quote! {#debug_bound: ::std::fmt::Debug})
+    }
+
     let field_fmt = dbg_fields.into_iter().map(|f| {
         let f_ident = f.ident;
         let format = f.format.as_deref().unwrap_or("{:?}");
@@ -23,8 +46,10 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
         }
     });
 
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let output = quote! {
-        impl ::std::fmt::Debug for #struct_ident {
+        impl #impl_generics ::std::fmt::Debug for #struct_ident #ty_generics #where_clause {
             fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                 fmt.debug_struct(stringify!(#struct_ident))
                     #(#field_fmt)*
@@ -36,10 +61,42 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
     Ok(output)
 }
 
+fn collect_debug_bounds(
+    ty_param_idents: &HashSet<&syn::Ident>,
+    debug_bounds: &mut HashSet<syn::Type>,
+    ty: &syn::Type,
+) {
+    let syn::Type::Path(syn::TypePath { path, .. }) = &ty else { return };
+    let (Some(first_segment), Some(last_segment)) = (
+        path.segments.first(),
+        path.segments.last()
+    ) else { return };
+    // PhantomData already implements `Debug`
+    if last_segment.ident.to_string() == "PhantomData" {
+        return;
+    }
+    if ty_param_idents.contains(&first_segment.ident) {
+        if !debug_bounds.contains(&ty) {
+            // `ty` might be a type parameter or an associated type
+            debug_bounds.insert(ty.clone());
+        }
+        return;
+    }
+    let syn::PathArguments::AngleBracketed(ref ty_args) = last_segment.arguments else {
+        return
+    };
+    for ty_arg in &ty_args.args {
+        if let syn::GenericArgument::Type(ref ty) = ty_arg {
+            collect_debug_bounds(ty_param_idents, debug_bounds, ty)
+        }
+    }
+}
+
 #[derive(FromDeriveInput)]
 #[darling(supports(struct_named))]
 struct DebugStruct {
     ident: syn::Ident,
+    generics: syn::Generics,
     data: ast::Data<(), DebugField>,
 }
 
@@ -47,5 +104,6 @@ struct DebugStruct {
 #[darling(attributes(debug))]
 struct DebugField {
     ident: Option<syn::Ident>,
+    ty: syn::Type,
     format: Option<String>,
 }

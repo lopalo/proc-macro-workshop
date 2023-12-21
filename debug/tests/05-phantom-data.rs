@@ -58,7 +58,7 @@ type S = String;
 pub struct Field<T> {
     marker: PhantomData<T>,
     string: S,
-    #[debug = "0b{:08b}"]
+    #[debug(format = "0b{:08b}")]
     bitmask: u8,
 }
 
