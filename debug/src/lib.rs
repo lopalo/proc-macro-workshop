@@ -2,6 +2,7 @@ use darling::{ast, Error, FromDeriveInput, FromField, Result};
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::collections::HashSet;
+use syn::punctuated::Punctuated;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -26,17 +27,27 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
         .map(|ty_param| &ty_param.ident)
         .collect();
 
-    let mut debug_bounds = HashSet::new();
-    for field in dbg_fields.iter() {
-        collect_debug_bounds(&ty_param_idents, &mut debug_bounds, &field.ty);
+    let mut bounds = Vec::<syn::WherePredicate>::new();
+    if let Some(bound) = dbg_struct.bound {
+        bounds.extend(bound)
+    } else {
+        // Infer trait bounds from fields
+        let mut debug_bounds = HashSet::new();
+        for field in dbg_fields.iter() {
+            collect_debug_bounds(
+                &ty_param_idents,
+                &mut debug_bounds,
+                &field.ty,
+            );
+        }
+        bounds.extend(
+            debug_bounds
+                .into_iter()
+                .map(|ty| syn::parse_quote! {#ty: ::std::fmt::Debug}),
+        )
     }
 
-    let where_clause = generics.make_where_clause();
-    for debug_bound in debug_bounds {
-        where_clause
-            .predicates
-            .push(syn::parse_quote! {#debug_bound: ::std::fmt::Debug})
-    }
+    generics.make_where_clause().predicates.extend(bounds);
 
     let field_fmt = dbg_fields.into_iter().map(|f| {
         let f_ident = f.ident;
@@ -93,11 +104,12 @@ fn collect_debug_bounds(
 }
 
 #[derive(FromDeriveInput)]
-#[darling(supports(struct_named))]
+#[darling(supports(struct_named), attributes(debug))]
 struct DebugStruct {
     ident: syn::Ident,
     generics: syn::Generics,
     data: ast::Data<(), DebugField>,
+    bound: Option<Punctuated<syn::WherePredicate, syn::Token![,]>>,
 }
 
 #[derive(FromField)]
