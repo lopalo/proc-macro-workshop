@@ -1,6 +1,6 @@
 use proc_macro2::{Delimiter, Group, Literal, Span, TokenStream, TokenTree};
 use quote::format_ident;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use syn::{
     parse::{Parse, ParseStream},
     Error, Result,
@@ -129,19 +129,47 @@ impl Parse for Seq {
 
 struct SeqHeader {
     var_name: String,
-    range: Range<u16>,
+
+    range: SeqRange,
 }
 
 impl Parse for SeqHeader {
     fn parse(input: ParseStream) -> Result<Self> {
         let var_name = input.parse::<syn::Ident>()?.to_string();
         input.parse::<syn::Token![in]>()?;
+        let range = input.parse()?;
+        Ok(Self { var_name, range })
+    }
+}
+
+#[derive(Clone)]
+enum SeqRange {
+    Range(Range<u16>),
+    RangeInclusive(RangeInclusive<u16>),
+}
+
+impl Parse for SeqRange {
+    fn parse(input: ParseStream) -> Result<Self> {
         let start = input.parse::<syn::LitInt>()?.base10_parse()?;
         input.parse::<syn::Token![..]>()?;
+        let equal_sign: Option<syn::Token![=]> = input.parse()?;
         let end = input.parse::<syn::LitInt>()?.base10_parse()?;
-        Ok(Self {
-            var_name,
-            range: Range { start, end },
-        })
+        let range = if equal_sign.is_some() {
+            SeqRange::RangeInclusive(RangeInclusive::new(start, end))
+        } else {
+            SeqRange::Range(Range { start, end })
+        };
+        Ok(range)
+    }
+}
+
+impl Iterator for SeqRange {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::RangeInclusive(range) => range.next(),
+            Self::Range(range) => range.next(),
+        }
     }
 }
