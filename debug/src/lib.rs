@@ -83,7 +83,7 @@ fn collect_debug_bounds(
         path.segments.last()
     ) else { return };
     // PhantomData already implements `Debug`
-    if last_segment.ident.to_string() == "PhantomData" {
+    if last_segment.ident == "PhantomData" {
         return;
     }
     if ty_param_idents.contains(&first_segment.ident) {

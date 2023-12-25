@@ -91,7 +91,7 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
                 }
             });
 
-            if each_setter_name != &f_ident.as_ref().unwrap().to_string() {
+            if f_ident.as_ref().unwrap() != each_setter_name {
                 builder_setter.push(quote_spanned! {span=>
                     #vis fn #f_ident(&mut self, value: #f_type) -> &mut Self {
                         self.#f_ident = value;
@@ -162,7 +162,7 @@ fn expand(input: TokenStream) -> Result<TokenStream> {
 fn optional_type(ty: &syn::Type) -> Option<&syn::Type> {
     let syn::Type::Path(syn::TypePath { path, .. }) = ty else { return None };
     let segment = path.segments.first()?;
-    if segment.ident.to_string() != "Option" {
+    if segment.ident != "Option" {
         return None;
     }
     let syn::PathArguments::AngleBracketed(ref option_args) = segment.arguments else {
