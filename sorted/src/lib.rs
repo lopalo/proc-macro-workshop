@@ -135,7 +135,7 @@ impl<'a> MatchVariant<'a> {
                 path.segments.iter().map(|seg| Cow::Borrowed(&seg.ident)),
             ),
             Self::Wildcard(token) => Box::new(
-                [Cow::Owned(syn::Ident::new("_", token.span()))].into_iter(),
+                [Cow::Owned(syn::Ident::new("\u{323AD}", token.span()))].into_iter(),
             ),
         }
     }
