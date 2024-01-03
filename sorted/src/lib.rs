@@ -1,7 +1,9 @@
 use proc_macro2::Span;
 use quote::ToTokens;
+use std::{borrow::Cow, fmt::Display};
 use syn::{
     parse_macro_input,
+    spanned::Spanned,
     visit_mut::{self, VisitMut},
     Error, Result,
 };
@@ -48,7 +50,7 @@ fn validate_variants<V>(item: V) -> Result<()>
 where
     V: GetVariants,
 {
-    let mut variants: Vec<_> = item.get_variants();
+    let mut variants: Vec<_> = item.get_variants()?;
     if variants.is_empty() {
         return Ok(());
     }
@@ -62,7 +64,8 @@ where
             .get(idx + 1)
             .unwrap_or_else(|| variants.last().unwrap());
         return err(
-            out_of_order.span(),
+            // Only `nightly` compiler produces full span for a multi-segment path
+            out_of_order.get_span(),
             &format!("{out_of_order} should sort before {next}"),
         );
     }
@@ -95,34 +98,132 @@ impl VisitMut for ExprMatchVisitor {
     }
 }
 
-trait GetVariants {
-    fn get_variants(&self) -> Vec<&syn::Ident>;
+// Define custom trait since `syn::spanned:Spanned` is a sealed
+trait GetSpan {
+    fn get_span(&self) -> Span;
 }
 
-impl GetVariants for &syn::ItemEnum {
-    fn get_variants(&self) -> Vec<&syn::Ident> {
-        self.variants.iter().map(|v| &v.ident).collect()
+trait GetVariants {
+    type Variant: Copy + Ord + Display + GetSpan;
+
+    fn get_variants(&self) -> Result<Vec<Self::Variant>>;
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Variant<T>(T);
+
+impl<'a> GetVariants for &'a syn::ItemEnum {
+    type Variant = Variant<&'a syn::Ident>;
+
+    fn get_variants(&self) -> Result<Vec<Self::Variant>> {
+        Ok(self.variants.iter().map(|v| Variant(&v.ident)).collect())
     }
 }
 
-impl GetVariants for &syn::ExprMatch {
-    fn get_variants(&self) -> Vec<&syn::Ident> {
-        println!("{:?}", self.arms);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchVariant<'a> {
+    Ident(&'a syn::Ident),
+    Path(&'a syn::Path),
+    Wildcard(&'a syn::token::Underscore),
+}
+
+impl<'a> MatchVariant<'a> {
+    fn segments(&self) -> Box<dyn Iterator<Item = Cow<syn::Ident>> + '_> {
+        match self {
+            Self::Ident(ident) => Box::new([Cow::Borrowed(*ident)].into_iter()),
+            Self::Path(path) => Box::new(
+                path.segments.iter().map(|seg| Cow::Borrowed(&seg.ident)),
+            ),
+            Self::Wildcard(token) => Box::new(
+                [Cow::Owned(syn::Ident::new("_", token.span()))].into_iter(),
+            ),
+        }
+    }
+}
+
+impl<'a> GetVariants for &'a syn::ExprMatch {
+    type Variant = Variant<MatchVariant<'a>>;
+
+    fn get_variants(&self) -> Result<Vec<Self::Variant>> {
         self.arms
             .iter()
-            .filter_map(|arm| match arm.pat {
-                syn::Pat::Struct(ref pat) => {
-                    pat.path.segments.last().map(|s| &s.ident)
-                }
+            .map(|arm| match arm.pat {
+                syn::Pat::Ident(ref pat) => Ok(MatchVariant::Ident(&pat.ident)),
+                syn::Pat::Struct(ref pat) => Ok(MatchVariant::Path(&pat.path)),
                 syn::Pat::TupleStruct(ref pat) => {
-                    pat.path.segments.last().map(|s| &s.ident)
+                    Ok(MatchVariant::Path(&pat.path))
                 }
-                _ => None,
+                syn::Pat::Wild(ref pat) => {
+                    Ok(MatchVariant::Wildcard(&pat.underscore_token))
+                }
+                ref pat => err(pat.span(), "unsupported by #[sorted]"),
             })
+            .map(|r| r.map(Variant))
             .collect()
     }
 }
 
 fn err<T>(span: Span, message: &str) -> Result<T> {
     Err(Error::new(span, message))
+}
+
+mod variant {
+    use super::*;
+
+    impl<T> PartialOrd for Variant<T>
+    where
+        Variant<T>: Ord,
+    {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl GetSpan for Variant<&syn::Ident> {
+        fn get_span(&self) -> Span {
+            self.0.span()
+        }
+    }
+
+    impl Ord for Variant<&syn::Ident> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0.cmp(&other.0)
+        }
+    }
+
+    impl Display for Variant<&syn::Ident> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    impl GetSpan for Variant<MatchVariant<'_>> {
+        fn get_span(&self) -> Span {
+            match self.0 {
+                MatchVariant::Ident(ident) => ident.span(),
+                MatchVariant::Path(path) => path.span(),
+                MatchVariant::Wildcard(token) => token.span(),
+            }
+        }
+    }
+
+    impl Ord for Variant<MatchVariant<'_>> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0.segments().cmp(other.0.segments())
+        }
+    }
+
+    impl Display for Variant<MatchVariant<'_>> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                MatchVariant::Ident(ident) => ident.fmt(f),
+                MatchVariant::Path(path) => path
+                    .to_token_stream()
+                    .to_string()
+                    .replace(" :: ", "::")
+                    .fmt(f),
+                MatchVariant::Wildcard(_) => "_".fmt(f),
+            }
+        }
+    }
 }
