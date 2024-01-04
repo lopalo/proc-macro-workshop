@@ -1,6 +1,6 @@
 use proc_macro2::Span;
 use quote::ToTokens;
-use std::{borrow::Cow, fmt::Display};
+use std::{fmt::Display, rc::Rc};
 use syn::{
     parse_macro_input,
     spanned::Spanned,
@@ -39,46 +39,47 @@ pub fn check(
 
 fn check_item(item: &syn::Item) -> Result<()> {
     if let syn::Item::Enum(ref enum_item) = item {
-        validate_variants(enum_item)?
+        validate_variants(&wildcard_ident(), enum_item)?
     } else {
         return err(Span::call_site(), "expected enum or match expression");
     };
     Ok(())
 }
 
-fn validate_variants<V>(item: V) -> Result<()>
+fn validate_variants<V>(wildcard_ident: &syn::Ident, item: V) -> Result<()>
 where
     V: GetVariants,
 {
-    let mut variants: Vec<_> = item.get_variants()?;
-    if variants.is_empty() {
-        return Ok(());
-    }
-    let out_of_order = variants
-        .windows(2)
-        .find_map(|pair| (pair[0] > pair[1]).then_some(pair[1]));
-    if let Some(out_of_order) = out_of_order {
-        variants.sort();
-        let idx = variants.binary_search(&out_of_order).unwrap();
-        let next = variants
-            .get(idx + 1)
-            .unwrap_or_else(|| variants.last().unwrap());
+    let variants: Vec<_> = item.get_variants(wildcard_ident)?;
+    let sorted_variants = {
+        let mut vs = variants.clone();
+        vs.sort();
+        vs
+    };
+    let out_of_order = variants.iter().zip(&sorted_variants).find_map(
+        |pair @ (unsorted, sorted)| (unsorted != sorted).then_some(pair),
+    );
+    if let Some((unsorted, sorted)) = out_of_order {
         return err(
             // Only `nightly` compiler produces full span for a multi-segment path
-            out_of_order.get_span(),
-            &format!("{out_of_order} should sort before {next}"),
+            sorted.get_span(),
+            &format!("{sorted} should sort before {unsorted}"),
         );
     }
     Ok(())
 }
 
 struct ExprMatchVisitor {
+    wildcard_ident: syn::Ident,
     result: Result<()>,
 }
 
 impl ExprMatchVisitor {
     fn new() -> Self {
-        Self { result: Ok(()) }
+        Self {
+            wildcard_ident: wildcard_ident(),
+            result: Ok(()),
+        }
     }
 }
 
@@ -87,7 +88,7 @@ impl VisitMut for ExprMatchVisitor {
         let len = expr.attrs.len();
         expr.attrs.retain(|attr| !attr.path().is_ident("sorted"));
         if expr.attrs.len() < len {
-            let res = validate_variants(&*expr);
+            let res = validate_variants(&self.wildcard_ident, &*expr);
             if let Err(ref mut err) = self.result {
                 err.extend(res.err())
             } else {
@@ -98,67 +99,82 @@ impl VisitMut for ExprMatchVisitor {
     }
 }
 
-// Define custom trait since `syn::spanned:Spanned` is a sealed
-trait GetSpan {
-    fn get_span(&self) -> Span;
-}
-
 trait GetVariants {
-    type Variant: Copy + Ord + Display + GetSpan;
-
-    fn get_variants(&self) -> Result<Vec<Self::Variant>>;
+    fn get_variants<'a>(
+        &'a self,
+        wildcard_ident: &'a syn::Ident,
+    ) -> Result<Vec<Variant<'a>>>;
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-struct Variant<T>(T);
+#[derive(Clone)]
+struct Variant<'a> {
+    kind: VariantKind<'a>,
+    segments: Rc<[&'a syn::Ident]>,
+}
 
-impl<'a> GetVariants for &'a syn::ItemEnum {
-    type Variant = Variant<&'a syn::Ident>;
+impl<'a> Variant<'a> {
+    fn from_ident(ident: &'a syn::Ident) -> Self {
+        Self {
+            kind: VariantKind::Ident(ident),
+            segments: Rc::new([ident]),
+        }
+    }
 
-    fn get_variants(&self) -> Result<Vec<Self::Variant>> {
-        Ok(self.variants.iter().map(|v| Variant(&v.ident)).collect())
+    fn from_path(path: &'a syn::Path) -> Self {
+        Self {
+            kind: VariantKind::Path(path),
+            segments: path.segments.iter().map(|seg| &seg.ident).collect(),
+        }
+    }
+
+    fn get_span(&self) -> Span {
+        match self.kind {
+            VariantKind::Ident(ident) => ident.span(),
+            VariantKind::Path(path) => path.span(),
+            VariantKind::Wildcard(token) => token.span(),
+        }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MatchVariant<'a> {
+#[derive(Clone, Copy)]
+enum VariantKind<'a> {
     Ident(&'a syn::Ident),
     Path(&'a syn::Path),
     Wildcard(&'a syn::token::Underscore),
 }
 
-impl<'a> MatchVariant<'a> {
-    fn segments(&self) -> Box<dyn Iterator<Item = Cow<syn::Ident>> + '_> {
-        match self {
-            Self::Ident(ident) => Box::new([Cow::Borrowed(*ident)].into_iter()),
-            Self::Path(path) => Box::new(
-                path.segments.iter().map(|seg| Cow::Borrowed(&seg.ident)),
-            ),
-            Self::Wildcard(token) => Box::new(
-                [Cow::Owned(syn::Ident::new("\u{323AD}", token.span()))].into_iter(),
-            ),
-        }
+impl<'a> GetVariants for &'a syn::ItemEnum {
+    fn get_variants(
+        &self,
+        _wildcard_ident: &syn::Ident,
+    ) -> Result<Vec<Variant>> {
+        Ok(self
+            .variants
+            .iter()
+            .map(|v| Variant::from_ident(&v.ident))
+            .collect())
     }
 }
 
-impl<'a> GetVariants for &'a syn::ExprMatch {
-    type Variant = Variant<MatchVariant<'a>>;
-
-    fn get_variants(&self) -> Result<Vec<Self::Variant>> {
+impl GetVariants for &syn::ExprMatch {
+    fn get_variants<'a>(
+        &'a self,
+        wildcard_ident: &'a syn::Ident,
+    ) -> Result<Vec<Variant>> {
         self.arms
             .iter()
             .map(|arm| match arm.pat {
-                syn::Pat::Ident(ref pat) => Ok(MatchVariant::Ident(&pat.ident)),
-                syn::Pat::Struct(ref pat) => Ok(MatchVariant::Path(&pat.path)),
+                syn::Pat::Ident(ref pat) => Ok(Variant::from_ident(&pat.ident)),
+                syn::Pat::Struct(ref pat) => Ok(Variant::from_path(&pat.path)),
                 syn::Pat::TupleStruct(ref pat) => {
-                    Ok(MatchVariant::Path(&pat.path))
+                    Ok(Variant::from_path(&pat.path))
                 }
-                syn::Pat::Wild(ref pat) => {
-                    Ok(MatchVariant::Wildcard(&pat.underscore_token))
-                }
+                syn::Pat::Wild(ref pat) => Ok(Variant {
+                    kind: VariantKind::Wildcard(&pat.underscore_token),
+                    segments: Rc::new([wildcard_ident]),
+                }),
                 ref pat => err(pat.span(), "unsupported by #[sorted]"),
             })
-            .map(|r| r.map(Variant))
             .collect()
     }
 }
@@ -167,62 +183,44 @@ fn err<T>(span: Span, message: &str) -> Result<T> {
     Err(Error::new(span, message))
 }
 
+// Dummy single char ident that must always be sorted to the last position
+fn wildcard_ident() -> syn::Ident {
+    syn::Ident::new("\u{323AD}", Span::call_site())
+}
+
 mod variant {
     use super::*;
 
-    impl<T> PartialOrd for Variant<T>
-    where
-        Variant<T>: Ord,
-    {
+    impl PartialEq for Variant<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.segments == other.segments
+        }
+    }
+
+    impl Eq for Variant<'_> {}
+
+    impl PartialOrd for Variant<'_> {
         fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
+            Some(self.segments.cmp(&other.segments))
         }
     }
 
-    impl GetSpan for Variant<&syn::Ident> {
-        fn get_span(&self) -> Span {
-            self.0.span()
-        }
-    }
-
-    impl Ord for Variant<&syn::Ident> {
+    impl Ord for Variant<'_> {
         fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.0.cmp(&other.0)
+            self.segments.cmp(&other.segments)
         }
     }
 
-    impl Display for Variant<&syn::Ident> {
+    impl Display for Variant<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
-
-    impl GetSpan for Variant<MatchVariant<'_>> {
-        fn get_span(&self) -> Span {
-            match self.0 {
-                MatchVariant::Ident(ident) => ident.span(),
-                MatchVariant::Path(path) => path.span(),
-                MatchVariant::Wildcard(token) => token.span(),
-            }
-        }
-    }
-
-    impl Ord for Variant<MatchVariant<'_>> {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.0.segments().cmp(other.0.segments())
-        }
-    }
-
-    impl Display for Variant<MatchVariant<'_>> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self.0 {
-                MatchVariant::Ident(ident) => ident.fmt(f),
-                MatchVariant::Path(path) => path
+            match self.kind {
+                VariantKind::Ident(ident) => ident.fmt(f),
+                VariantKind::Path(path) => path
                     .to_token_stream()
                     .to_string()
                     .replace(" :: ", "::")
                     .fmt(f),
-                MatchVariant::Wildcard(_) => "_".fmt(f),
+                VariantKind::Wildcard(_) => "_".fmt(f),
             }
         }
     }
