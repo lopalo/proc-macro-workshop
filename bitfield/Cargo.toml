@@ -2,6 +2,7 @@
 name = "bitfield"
 version = "0.0.0"
 autotests = false
+rust-version = "1.73"
 edition = "2021"
 publish = false
 
