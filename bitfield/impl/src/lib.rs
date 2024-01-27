@@ -42,7 +42,7 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
             pub fn #setter_ident(&mut self, item: #spec::Item) {
                 const _: () = assert!(
                     #bits_len.div_ceil(8) <= #spec::ZERO_ITEM_BYTES.len(),
-                    "The `Specifier::ItemBytes` array cannot accomodate `Specifier::BITS`"
+                    "the `Specifier::ItemBytes` array cannot accomodate `Specifier::BITS`"
                 );
                 ::bitfield::write_bits(
                     &mut self.data,
@@ -65,9 +65,9 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
         });
         bits_offset = quote! {#bits_offset + #bits_len};
     }
-
+    let struct_size_error_msg =
+        format!("the size of struct `{ident}` is not a multiple of 8 bits");
     let output = quote! {
-
         #[allow(non_upper_case_globals)]
         const #struct_bytes_len_ident: usize = (#bits_offset).div_ceil(8);
 
@@ -80,6 +80,8 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
 
             #(#accessors)*
         }
+
+        const _: () = assert!((#bits_offset) % 8 == 0, #struct_size_error_msg);
     };
 
     Ok(output)

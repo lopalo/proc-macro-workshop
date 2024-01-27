@@ -42,11 +42,11 @@ pub fn write_bits(
     for item_bit_idx in 0..item_bits {
         let data_bit_idx = data_offset_bits + item_bit_idx;
 
-        let data_byte_idx = data_bit_idx.wrapping_div(8);
-        let data_byte_bit_idx = data_bit_idx.wrapping_rem(8);
+        let data_byte_idx = data_bit_idx / 8;
+        let data_byte_bit_idx = data_bit_idx % 8;
 
-        let item_byte_idx = item_bit_idx.wrapping_div(8);
-        let item_byte_bit_idx = item_bit_idx.wrapping_rem(8);
+        let item_byte_idx = item_bit_idx / 8;
+        let item_byte_bit_idx = item_bit_idx % 8;
 
         let data_byte = data[data_byte_idx];
         let item_byte = item[item_byte_idx];
@@ -72,8 +72,8 @@ pub fn read_bits(
     for item_bit_idx in 0..item_bits {
         let data_bit_idx = data_offset_bits + item_bit_idx;
 
-        let data_byte_idx = data_bit_idx.wrapping_div(8);
-        let data_byte_bit_idx = data_bit_idx.wrapping_rem(8);
+        let data_byte_idx = data_bit_idx / 8;
+        let data_byte_bit_idx = data_bit_idx % 8;
         let data_byte = data[data_byte_idx];
 
         let bit_is_set = (data_byte << data_byte_bit_idx) & mask == mask;
@@ -81,8 +81,8 @@ pub fn read_bits(
             continue;
         }
 
-        let item_byte_idx = item_bit_idx.wrapping_div(8);
-        let item_byte_bit_idx = item_bit_idx.wrapping_rem(8);
+        let item_byte_idx = item_bit_idx / 8;
+        let item_byte_bit_idx = item_bit_idx % 8;
         let item_byte = item[item_byte_idx];
         item[item_byte_idx] = item_byte | (mask >> item_byte_bit_idx);
     }
