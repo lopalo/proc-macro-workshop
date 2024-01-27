@@ -10,11 +10,84 @@
 //
 // From the perspective of a user of this crate, they get all the necessary APIs
 // (macro, trait, struct) through the one bitfield crate.
-pub use bitfield_impl::{define_specifiers, bitfield};
+pub use bitfield_impl::{bitfield, define_specifiers};
 
 pub trait Specifier {
     const BITS: usize;
+    type Item;
+    type ItemBytes;
+
+    const ZERO_ITEM_BYTES: Self::ItemBytes;
+    fn item_to_bytes(item: Self::Item) -> Self::ItemBytes;
+    fn item_from_bytes(bytes: Self::ItemBytes) -> Self::Item;
 }
 
-define_specifiers!{B 1 64}
+define_specifiers! {B 1 8 u8}
+define_specifiers! {B 9 16 u16}
+define_specifiers! {B 17 32 u32}
+define_specifiers! {B 33 64 u64}
 
+/// Panics if the bits are out of bounds of either `data` or `item`
+pub fn write_bits(
+    data: &mut [u8],
+    data_offset_bits: usize,
+    item: &mut [u8],
+    item_bits: usize,
+) {
+    for item_byte in &mut *item {
+        *item_byte = item_byte.reverse_bits();
+    }
+
+    let mask: u8 = 0b10000000;
+    for item_bit_idx in 0..item_bits {
+        let data_bit_idx = data_offset_bits + item_bit_idx;
+
+        let data_byte_idx = data_bit_idx.wrapping_div(8);
+        let data_byte_bit_idx = data_bit_idx.wrapping_rem(8);
+
+        let item_byte_idx = item_bit_idx.wrapping_div(8);
+        let item_byte_bit_idx = item_bit_idx.wrapping_rem(8);
+
+        let data_byte = data[data_byte_idx];
+        let item_byte = item[item_byte_idx];
+        let bit_is_set = (item_byte << item_byte_bit_idx) & mask == mask;
+
+        data[data_byte_idx] = if bit_is_set {
+            data_byte | (mask >> data_byte_bit_idx)
+        } else {
+            data_byte & !(mask >> data_byte_bit_idx)
+        };
+    }
+}
+
+/// `item` must be zeroed.
+/// Panics if the bits are out of bounds of either `data` or `item`
+pub fn read_bits(
+    data: &[u8],
+    data_offset_bits: usize,
+    item: &mut [u8],
+    item_bits: usize,
+) {
+    let mask: u8 = 0b10000000;
+    for item_bit_idx in 0..item_bits {
+        let data_bit_idx = data_offset_bits + item_bit_idx;
+
+        let data_byte_idx = data_bit_idx.wrapping_div(8);
+        let data_byte_bit_idx = data_bit_idx.wrapping_rem(8);
+        let data_byte = data[data_byte_idx];
+
+        let bit_is_set = (data_byte << data_byte_bit_idx) & mask == mask;
+        if !bit_is_set {
+            continue;
+        }
+
+        let item_byte_idx = item_bit_idx.wrapping_div(8);
+        let item_byte_bit_idx = item_bit_idx.wrapping_rem(8);
+        let item_byte = item[item_byte_idx];
+        item[item_byte_idx] = item_byte | (mask >> item_byte_bit_idx);
+    }
+
+    for item_byte in item {
+        *item_byte = item_byte.reverse_bits();
+    }
+}
