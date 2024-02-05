@@ -87,6 +87,69 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
     Ok(output)
 }
 
+#[proc_macro_derive(BitfieldSpecifier)]
+pub fn derive_specifier(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    expand_derive_specifier(input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn expand_derive_specifier(input: TokenStream) -> Result<TokenStream> {
+    let input: syn::DeriveInput = syn::parse2(input)?;
+
+    let ident = &input.ident;
+    let syn::Data::Enum(syn::DataEnum { variants, .. }) = input.data else {
+        return err(ident.span(), "Only an enum is supported");
+    };
+
+    let variants: Vec<_> = variants.into_iter().collect();
+    let bits_len = if variants.len() > 0 {
+        variants.len().ilog2()
+    } else {
+        0
+    } as usize;
+    let bytes_len = bits_len.div_ceil(8);
+    let item_ty = match bits_len {
+        0..=8 => quote! {u8},
+        9..=16 => quote! {u16},
+        17..=32 => quote! {u32},
+        _ => quote! {u64},
+    };
+
+    let mut from_number_cases = TokenStream::new();
+    for variant in variants {
+        let var_ident = variant.ident;
+        from_number_cases.extend(quote! {
+            if num == (#ident::#var_ident as #item_ty) {
+                return #ident::#var_ident
+            }
+        })
+    }
+
+    let output = quote! {
+        impl ::bitfield::Specifier for #ident {
+            const BITS: usize = #bits_len;
+            type Item = #ident;
+            type ItemBytes = [u8; #bytes_len];
+            const ZERO_ITEM_BYTES: Self::ItemBytes = [0; #bytes_len];
+
+            fn item_to_bytes(item: Self::Item) -> Self::ItemBytes {
+                (item as #item_ty).to_le_bytes()
+            }
+
+            fn item_from_bytes(bytes: Self::ItemBytes) -> Self::Item {
+                let num = #item_ty::from_le_bytes(bytes);
+                #from_number_cases
+                unreachable!()
+            }
+        }
+    };
+
+    Ok(output)
+}
+
 fn err<T>(span: Span, message: &str) -> Result<T> {
     Err(Error::new(span, message))
 }

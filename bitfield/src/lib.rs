@@ -10,14 +10,15 @@
 //
 // From the perspective of a user of this crate, they get all the necessary APIs
 // (macro, trait, struct) through the one bitfield crate.
-pub use bitfield_impl::{bitfield, define_specifiers};
+use bitfield_impl::define_specifiers;
+pub use bitfield_impl::{bitfield, BitfieldSpecifier};
 
 pub trait Specifier {
     const BITS: usize;
     type Item;
     type ItemBytes;
-
     const ZERO_ITEM_BYTES: Self::ItemBytes;
+
     fn item_to_bytes(item: Self::Item) -> Self::ItemBytes;
     fn item_from_bytes(bytes: Self::ItemBytes) -> Self::Item;
 }
@@ -26,6 +27,21 @@ define_specifiers! {B 1 8 u8}
 define_specifiers! {B 9 16 u16}
 define_specifiers! {B 17 32 u32}
 define_specifiers! {B 33 64 u64}
+
+impl Specifier for bool {
+    const BITS: usize = 1;
+    type Item = Self;
+    type ItemBytes = [u8; 1];
+    const ZERO_ITEM_BYTES: [u8; 1] = [0; 1];
+
+    fn item_to_bytes(item: bool) -> [u8; 1] {
+        (item as u8).to_le_bytes()
+    }
+
+    fn item_from_bytes(bytes: [u8; 1]) -> bool {
+        u8::from_le_bytes(bytes) != 0
+    }
+}
 
 /// Panics if the bits are out of bounds of either `data` or `item`
 pub fn write_bits(
