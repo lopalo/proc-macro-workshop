@@ -35,6 +35,23 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
         let ty = field.ty;
         let spec = quote! {<#ty as ::bitfield::Specifier>};
         let bits_len = quote! {#spec::BITS};
+        let mut req_bits_len = quote! {#bits_len};
+        for attr in field.attrs {
+            if attr.path().is_ident("bits") {
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(ref val_lit),
+                    ..
+                }) = attr.meta.require_name_value()?.value
+                else {
+                    return err(
+                        attr.span(),
+                        "Expected integer literal as a value. Example: #[bits = 7]",
+                    );
+                };
+                let bits_len = val_lit.base10_parse::<usize>()?;
+                req_bits_len = quote! { #bits_len };
+            }
+        }
 
         let setter_ident = format_ident!("set_{}", ident);
         let getter_ident = format_ident!("get_{}", ident);
@@ -43,6 +60,15 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
                 const _: () = assert!(
                     #bits_len.div_ceil(8) <= #spec::ZERO_ITEM_BYTES.len(),
                     "the `Specifier::ItemBytes` array cannot accomodate `Specifier::BITS`"
+                );
+                const _: () = assert!(
+                    #bits_len == #req_bits_len,
+                    "{}",
+                    ::bitfield::const_format::formatcp!(
+                        "the field size is {} bit(s), must be {} bit(s)",
+                        #bits_len,
+                        #req_bits_len
+                    )
                 );
                 ::bitfield::write_bits(
                     &mut self.data,
@@ -66,7 +92,7 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
         bits_offset = quote! {#bits_offset + #bits_len};
     }
     let struct_size_error_msg =
-        format!("the size of struct `{ident}` is not a multiple of 8 bits");
+        format!("the size of struct `{ident}` must be a multiple of 8 bits");
     let output = quote! {
         #[allow(non_upper_case_globals)]
         const #struct_bytes_len_ident: usize = (#bits_offset).div_ceil(8);
@@ -81,7 +107,13 @@ fn expand_bitfield(input: TokenStream) -> Result<TokenStream> {
             #(#accessors)*
         }
 
-        const _: () = assert!((#bits_offset) % 8 == 0, #struct_size_error_msg);
+        const _: () = assert!(
+            (#bits_offset) % 8 == 0,
+            "{}",
+            ::bitfield::const_format::formatcp!(
+                "{}, actual size is {} bit(s)", #struct_size_error_msg, #bits_offset
+            )
+        );
     };
 
     Ok(output)
@@ -110,6 +142,16 @@ fn expand_derive_specifier(input: TokenStream) -> Result<TokenStream> {
     } else {
         0
     } as usize;
+
+    let variants_len = 2_isize.pow(bits_len as u32);
+
+    if variants_len != variants.len() as isize {
+        return err(
+            Span::call_site(),
+            "BitfieldSpecifier expected a number of variants which is a power of 2"
+        );
+    }
+
     let bytes_len = bits_len.div_ceil(8);
     let item_ty = match bits_len {
         0..=8 => quote! {u8},
@@ -118,12 +160,20 @@ fn expand_derive_specifier(input: TokenStream) -> Result<TokenStream> {
         _ => quote! {u64},
     };
 
+    let out_of_range_error_msg =
+        format!("Discriminant is out of range: 0..{variants_len}");
     let mut from_number_cases = TokenStream::new();
     for variant in variants {
+        let span = variant.span();
         let var_ident = variant.ident;
-        from_number_cases.extend(quote! {
-            if num == (#ident::#var_ident as #item_ty) {
-                return #ident::#var_ident
+        let var_ident = quote! { #ident::#var_ident };
+        from_number_cases.extend(quote_spanned! {span=>
+            const _: () = assert!(
+                (#var_ident as isize) >= 0 && (#var_ident as isize) < #variants_len,
+                #out_of_range_error_msg
+            );
+            if num == (#var_ident as #item_ty) {
+                return #var_ident
             }
         })
     }

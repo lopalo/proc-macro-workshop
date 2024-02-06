@@ -12,6 +12,7 @@
 // (macro, trait, struct) through the one bitfield crate.
 use bitfield_impl::define_specifiers;
 pub use bitfield_impl::{bitfield, BitfieldSpecifier};
+pub use const_format;
 
 pub trait Specifier {
     const BITS: usize;
